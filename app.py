@@ -4,7 +4,10 @@ import os
 import pandas as pd
 import plotly.express as px
 
-#Helper: format a lap time (timedelta) as clean text like "1:32.608"
+# ---- Helper: format a lap time (timedelta) as clean text like "1:32.608" ----
+# Without this, Streamlit's table widget tries to "smartly" format durations
+# and rounds them to something vague like "2 minutes". Converting to a plain
+# string ourselves guarantees the exact value is shown.
 def format_laptime(td):
     if pd.isna(td):
         return None
@@ -13,15 +16,15 @@ def format_laptime(td):
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:06.3f}"
 
-#1. Page setup
+# ---- 1. Page setup ----
 st.set_page_config(page_title="F1 Dashboard", page_icon="🏁", layout="wide")
 
-# 2. Cache setup
+# ---- 2. Cache setup ----
 CACHE_DIR = "f1_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 fastf1.Cache.enable_cache(CACHE_DIR)
 
-#3. Load the full race calendar for a seaso
+# ---- 3. Load the full race calendar for a season ----
 # Instead of hardcoding race names, we ask FastF1 for the real schedule.
 # We cache this too, since the schedule doesn't change moment to moment.
 @st.cache_data
@@ -63,7 +66,7 @@ race_name = st.sidebar.selectbox("Race", list(race_name_to_round.keys()))
 round_number = race_name_to_round[race_name]
 
 # ---- 6. Main title ----
-st.title("F1 Race Dashboard")
+st.title("🏁 F1 Race Dashboard")
 st.write(f"Showing data for the **{race_name}**, {year} season.")
 
 # ---- 7. Load the selected race ----
@@ -106,6 +109,13 @@ st.dataframe(
 st.sidebar.subheader("Compare a Driver")
 drivers = sorted(session.laps["Driver"].unique())
 selected_driver = st.sidebar.selectbox("Driver", drivers)
+
+# A second dropdown for comparison, excluding whoever is already selected
+# above — comparing a driver against themselves wouldn't be useful.
+compare_driver = st.sidebar.selectbox(
+    "Compare With",
+    [d for d in drivers if d != selected_driver],
+)
 
 # pick_driver filters the full lap dataset down to just this driver's laps.
 driver_laps = session.laps.pick_driver(selected_driver).copy()
@@ -201,3 +211,59 @@ throttle_fig = px.line(
     template="plotly_dark",
 )
 st.plotly_chart(throttle_fig, use_container_width=True)
+
+# ---- 15. Driver vs. driver comparison (NEW) ----
+# This is the section that actually answers "who was faster, and where."
+# The trick used throughout this section: build two small tables (one per
+# driver) that have the SAME column names, add a "Driver" column to each
+# so we know which rows belong to who, then stack them into one combined
+# table. Plotly can then draw one separate colored line per driver
+# automatically, just by telling it color="Driver".
+st.header(f"⚔️ {selected_driver} vs {compare_driver}")
+
+# --- Lap time comparison ---
+compare_laps = session.laps.pick_driver(compare_driver).copy()
+compare_laps["LapTimeSeconds"] = compare_laps["LapTime"].dt.total_seconds()
+
+driver1_pace = pace_data[["LapNumber", "LapTimeSeconds"]].copy()
+driver1_pace["Driver"] = selected_driver
+
+driver2_pace = compare_laps.dropna(subset=["LapTimeSeconds"])[["LapNumber", "LapTimeSeconds"]].copy()
+driver2_pace["Driver"] = compare_driver
+
+combined_pace = pd.concat([driver1_pace, driver2_pace])
+
+st.subheader("Lap Time Comparison")
+compare_pace_fig = px.line(
+    combined_pace,
+    x="LapNumber",
+    y="LapTimeSeconds",
+    color="Driver",
+    markers=True,
+    labels={"LapNumber": "Lap", "LapTimeSeconds": "Lap Time (seconds)"},
+    template="plotly_dark",
+)
+st.plotly_chart(compare_pace_fig, use_container_width=True)
+
+# --- Speed trace comparison, using each driver's fastest lap ---
+compare_fastest_lap = session.laps.pick_driver(compare_driver).pick_fastest()
+compare_telemetry = compare_fastest_lap.get_car_data().add_distance()
+
+telemetry_labeled = telemetry[["Distance", "Speed"]].copy()
+telemetry_labeled["Driver"] = selected_driver
+
+compare_telemetry_labeled = compare_telemetry[["Distance", "Speed"]].copy()
+compare_telemetry_labeled["Driver"] = compare_driver
+
+combined_telemetry = pd.concat([telemetry_labeled, compare_telemetry_labeled])
+
+st.subheader("Fastest Lap — Speed Comparison")
+compare_speed_fig = px.line(
+    combined_telemetry,
+    x="Distance",
+    y="Speed",
+    color="Driver",
+    labels={"Distance": "Distance around lap (m)", "Speed": "Speed (km/h)"},
+    template="plotly_dark",
+)
+st.plotly_chart(compare_speed_fig, use_container_width=True)
