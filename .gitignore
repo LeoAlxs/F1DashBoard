@@ -1,0 +1,9 @@
+# FastF1's local data cache — regenerated automatically, shouldn't be in version control
+f1_cache/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment folder (if you created one)
+venv/
