@@ -2,11 +2,9 @@ import streamlit as st
 import fastf1
 import os
 import pandas as pd
+import plotly.express as px
 
-# ---- Helper: format a lap time (timedelta) as clean text like "1:32.608" ----
-# Without this, Streamlit's table widget tries to "smartly" format durations
-# and rounds them to something vague like "2 minutes". Converting to a plain
-# string ourselves guarantees the exact value is shown.
+#Helper: format a lap time (timedelta) as clean text like "1:32.608"
 def format_laptime(td):
     if pd.isna(td):
         return None
@@ -15,15 +13,15 @@ def format_laptime(td):
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:06.3f}"
 
-# ---- 1. Page setup ----
+#1. Page setup
 st.set_page_config(page_title="F1 Dashboard", page_icon="🏁", layout="wide")
 
-# ---- 2. Cache setup ----
+# 2. Cache setup
 CACHE_DIR = "f1_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 fastf1.Cache.enable_cache(CACHE_DIR)
 
-# ---- 3. Load the full race calendar for a season ----
+#3. Load the full race calendar for a seaso
 # Instead of hardcoding race names, we ask FastF1 for the real schedule.
 # We cache this too, since the schedule doesn't change moment to moment.
 @st.cache_data
@@ -65,7 +63,7 @@ race_name = st.sidebar.selectbox("Race", list(race_name_to_round.keys()))
 round_number = race_name_to_round[race_name]
 
 # ---- 6. Main title ----
-st.title("🏁 F1 Race Dashboard")
+st.title("F1 Race Dashboard")
 st.write(f"Showing data for the **{race_name}**, {year} season.")
 
 # ---- 7. Load the selected race ----
@@ -111,6 +109,13 @@ selected_driver = st.sidebar.selectbox("Driver", drivers)
 
 # pick_driver filters the full lap dataset down to just this driver's laps.
 driver_laps = session.laps.pick_driver(selected_driver).copy()
+
+# We save the lap time as a plain number (seconds) BEFORE formatting it as
+# display text below. Charts need actual numbers to plot — "1:32.608" is
+# just text as far as a chart is concerned, but 92.608 is a number it can
+# place on a graph.
+driver_laps["LapTimeSeconds"] = driver_laps["LapTime"].dt.total_seconds()
+
 driver_laps["LapTime"] = driver_laps["LapTime"].apply(format_laptime)
 # Sector times are also timedeltas, so we format them the same way.
 driver_laps["Sector1Time"] = driver_laps["Sector1Time"].apply(format_laptime)
@@ -126,6 +131,28 @@ st.dataframe(
     hide_index=True,
 )
 
+# ---- 12b. Lap time progression chart (NEW) ----
+# This shows the shape of a driver's whole race at a glance: did they get
+# faster as fuel burned off, slower as tires wore out, lose time in
+# traffic, or have a dip from a pit stop? A table of numbers can't show
+# that pattern nearly as clearly as a line chart can.
+st.subheader(f"{selected_driver}'s Pace Across the Race")
+
+# Some laps have no valid time (e.g. the lap right after a pit stop, or a
+# lap under a safety car) — we drop those so the chart doesn't show a gap
+# dropping to zero.
+pace_data = driver_laps.dropna(subset=["LapTimeSeconds"])
+
+pace_fig = px.line(
+    pace_data,
+    x="LapNumber",
+    y="LapTimeSeconds",
+    markers=True,  # shows a dot on each individual lap, not just a smooth line
+    labels={"LapNumber": "Lap", "LapTimeSeconds": "Lap Time (seconds)"},
+    template="plotly_dark",  # matches the dark theme we'll build out fully later
+)
+st.plotly_chart(pace_fig, use_container_width=True)
+
 # ---- 13. Telemetry summary for the fastest lap (NEW) ----
 # Telemetry is much more detailed than lap data — hundreds of individual
 # readings taken throughout a single lap (speed, throttle, brake, gear,
@@ -138,7 +165,39 @@ st.subheader(f"{selected_driver}'s Fastest Lap — Telemetry Summary")
 driver_fastest_lap = session.laps.pick_driver(selected_driver).pick_fastest()
 telemetry = driver_fastest_lap.get_car_data()
 
+# add_distance() calculates how far (in meters) into the lap each telemetry
+# reading was taken. This becomes our x-axis below — instead of plotting
+# against raw time, we plot against physical position around the track,
+# so the chart shape actually reflects the circuit's layout (straights,
+# corners, etc.).
+telemetry = telemetry.add_distance()
+
 col3, col4, col5 = st.columns(3)
 col3.metric("Top Speed", f"{telemetry['Speed'].max():.0f} km/h")
 col4.metric("Avg Throttle", f"{telemetry['Throttle'].mean():.0f}%")
 col5.metric("Max RPM", f"{telemetry['RPM'].max():.0f}")
+
+# ---- 14. Speed & throttle trace charts (NEW) ----
+# These show exactly what the car was doing at every single point around
+# the lap — where it was fastest (straights), where it slowed down
+# (corners), and where the driver was fully on the throttle vs. lifting
+# off. This is the same kind of data used for corner-by-corner analysis.
+st.subheader(f"{selected_driver}'s Fastest Lap — Speed Trace")
+speed_fig = px.line(
+    telemetry,
+    x="Distance",
+    y="Speed",
+    labels={"Distance": "Distance around lap (m)", "Speed": "Speed (km/h)"},
+    template="plotly_dark",
+)
+st.plotly_chart(speed_fig, use_container_width=True)
+
+st.subheader(f"{selected_driver}'s Fastest Lap — Throttle Trace")
+throttle_fig = px.line(
+    telemetry,
+    x="Distance",
+    y="Throttle",
+    labels={"Distance": "Distance around lap (m)", "Throttle": "Throttle (%)"},
+    template="plotly_dark",
+)
+st.plotly_chart(throttle_fig, use_container_width=True)
