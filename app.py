@@ -182,10 +182,11 @@ telemetry = driver_fastest_lap.get_car_data()
 # corners, etc.).
 telemetry = telemetry.add_distance()
 
-col3, col4, col5 = st.columns(3)
+col3, col4, col5, col6 = st.columns(4)
 col3.metric("Top Speed", f"{telemetry['Speed'].max():.0f} km/h")
 col4.metric("Avg Throttle", f"{telemetry['Throttle'].mean():.0f}%")
 col5.metric("Max RPM", f"{telemetry['RPM'].max():.0f}")
+col6.metric("Time Braking", f"{telemetry['Brake'].mean() * 100:.0f}%")
 
 # ---- 14. Speed & throttle trace charts (NEW) ----
 # These show exactly what the car was doing at every single point around
@@ -211,6 +212,23 @@ throttle_fig = px.line(
     template="plotly_dark",
 )
 st.plotly_chart(throttle_fig, use_container_width=True)
+
+# ---- 14b. Brake trace chart (NEW) ----
+# The Brake channel is the third piece of the telemetry picture. Unlike
+# Speed and Throttle, Brake is usually just on/off (True or False) rather
+# than a smooth range — so this chart looks more like a series of blocks
+# than a curve. That's expected: it shows exactly where on the lap the
+# driver was braking versus not, which lines up with the dips you see in
+# the speed trace above.
+st.subheader(f"{selected_driver}'s Fastest Lap — Brake Trace")
+brake_fig = px.line(
+    telemetry,
+    x="Distance",
+    y="Brake",
+    labels={"Distance": "Distance around lap (m)", "Brake": "Brake (on/off)"},
+    template="plotly_dark",
+)
+st.plotly_chart(brake_fig, use_container_width=True)
 
 # ---- 15. Driver vs. driver comparison (NEW) ----
 # This is the section that actually answers "who was faster, and where."
