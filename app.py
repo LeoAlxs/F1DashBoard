@@ -54,6 +54,29 @@ def get_contrast_text_color(hex_color):
     brightness = (r * 299 + g * 587 + b * 114) / 1000
     return "#000000" if brightness > 150 else "#ffffff"
 
+# ---- Helper: convert a hex color into a semi-transparent rgba string ----
+# Used to build the track outline's fade effect — the same team color
+# repeated at different transparency levels, which is how you fake a
+# soft "glow" without needing real blur effects: several progressively
+# more transparent, wider lines stacked behind a solid center line.
+def hex_to_rgba(hex_color, alpha):
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+# ---- Helper: scale a track's points outward from its own center ----
+# Used to build "echo" copies of the track outline — same shape, but
+# bigger, radiating outward from the middle of the track. Finding the
+# centroid (average X, average Y) gives us a center point to scale
+# around: for each point, we take its distance from that center and
+# stretch it further out by scale_factor, in both directions equally.
+def scale_points_from_centroid(x, y, scale_factor):
+    centroid_x = x.mean()
+    centroid_y = y.mean()
+    scaled_x = centroid_x + (x - centroid_x) * scale_factor
+    scaled_y = centroid_y + (y - centroid_y) * scale_factor
+    return scaled_x, scaled_y
+
 # ---- Helper: apply one consistent look to every chart ----
 # Instead of setting font/height/margins separately on each chart (and
 # risking them all looking slightly different), every chart passes
@@ -104,12 +127,12 @@ def format_laptime(td):
 # indentation, it gets treated as a preformatted "code block" and the
 # HTML tags get printed as literal text instead of being rendered. Using
 # .strip() and avoiding indented multi-line strings avoids that trap.
-def section_header(label, title, subtitle=None):
+def section_header(label, title, subtitle=None, font="Orbitron"):
     subtitle_html = f'<p style="color:#8a8f98; font-size:14px; margin:0; font-family:\'Titillium Web\', sans-serif;">{subtitle}</p>' if subtitle else ""
     html = (
         f'<div style="margin:4px 0 20px 0;">'
         f'<p style="color:{ACCENT_COLOR}; font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; margin:0 0 4px 0; font-family:\'Titillium Web\', sans-serif;">{label}</p>'
-        f'<h2 style="font-size:30px; font-weight:800; margin:0 0 4px 0; font-family:\'Orbitron\', sans-serif;">{title}</h2>'
+        f'<h2 style="font-size:30px; font-weight:800; margin:0 0 4px 0; font-family:\'{font}\', sans-serif;">{title}</h2>'
         f'{subtitle_html}'
         f'</div>'
     )
@@ -214,6 +237,7 @@ st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Racing+Sans+One&display=swap');
 
     html, body, [class*="css"] {
         font-family: 'Titillium Web', sans-serif;
@@ -396,14 +420,13 @@ with st.container(border=True):
         )
 
         # Building this with go.Figure instead of px.line, so we can layer
-        # THREE separate line traces on top of the exact same path:
-        #   1. A thick white line underneath (the "outline")
-        #   2. The team color on top, slightly thinner, so white shows
-        #      through as a border on both edges
-        #   3. A very thin white line on top of that, as a subtle inner
-        #      highlight down the center
-        # Same path, three passes, different widths — that's what gives
-        # the line real presence instead of a single flat stroke.
+        # FOUR separate line traces — but unlike a typical "glow" effect
+        # (same shape, different widths), each one here is a full COPY of
+        # the track outline, scaled slightly bigger than the last and
+        # radiating outward from the track's own center, getting more
+        # transparent the further out it goes. Like ripples expanding
+        # outward from the actual track shape, rather than a blurred halo
+        # around it.
         #
         # shape="spline" is the fix for the jagged/rigid look — by
         # default, Plotly connects each individual telemetry point with a
@@ -416,18 +439,33 @@ with st.container(border=True):
         # the curve is (0 = off, up to 1.3 = very loose).
         line_shape_settings = dict(shape="spline", smoothing=1.0)
 
+        # (scale, opacity) for each echo layer — biggest and faintest
+        # first, since Plotly draws later traces ON TOP of earlier ones,
+        # and we want the real (unscaled) track outline to end up on top,
+        # fully visible, with the echoes fading out behind it. More
+        # layers, spaced further apart, reads as a grander, more dramatic
+        # ripple rather than a tight cluster of lines close to the track.
+        echo_layers = [
+            (1.32, 0.05),
+            (1.25, 0.08),
+            (1.18, 0.12),
+            (1.11, 0.18),
+            (1.05, 0.28),
+        ]
+
         track_fig = go.Figure()
+        for scale, alpha in echo_layers:
+            echo_x, echo_y = scale_points_from_centroid(rotated_x, rotated_y, scale)
+            track_fig.add_trace(go.Scatter(
+                x=echo_x, y=echo_y, mode="lines",
+                line=dict(color=hex_to_rgba(winner_color, alpha), width=3, **line_shape_settings),
+                showlegend=False,
+            ))
+        # The real, unscaled track outline, drawn last (on top), solid
+        # and fully opaque — this is the actual, accurate track shape.
         track_fig.add_trace(go.Scatter(
             x=rotated_x, y=rotated_y, mode="lines",
-            line=dict(color="white", width=12, **line_shape_settings), showlegend=False,
-        ))
-        track_fig.add_trace(go.Scatter(
-            x=rotated_x, y=rotated_y, mode="lines",
-            line=dict(color=winner_color, width=7, **line_shape_settings), showlegend=False,
-        ))
-        track_fig.add_trace(go.Scatter(
-            x=rotated_x, y=rotated_y, mode="lines",
-            line=dict(color="white", width=1.5, **line_shape_settings), showlegend=False,
+            line=dict(color=winner_color, width=3, **line_shape_settings), showlegend=False,
         ))
         track_fig.update_layout(template="plotly_dark")
 
@@ -439,15 +477,16 @@ with st.container(border=True):
 
         # The plot area was being set to EXACTLY match the track's min/max
         # coordinates, with zero breathing room. Since the outline itself
-        # has real thickness (12px wide), the parts of the line sitting
-        # right at those extreme edge points were getting visually cut
-        # off by the plot boundary. Padding the visible range by 8% on
-        # each side gives the thick stroke room to breathe without
-        # touching the edge of the chart.
+        # has real thickness, the parts of the line sitting right at
+        # those extreme edge points were getting visually cut off by the
+        # plot boundary. Padding the visible range gives room to breathe
+        # without touching the edge of the chart — bumped up to 38% now
+        # that the outermost echo layer extends up to 32% beyond the
+        # track's actual boundaries, so we need extra room to fit it.
         x_min, x_max = rotated_x.min(), rotated_x.max()
         y_min, y_max = rotated_y.min(), rotated_y.max()
-        x_pad = (x_max - x_min) * 0.08
-        y_pad = (y_max - y_min) * 0.08
+        x_pad = (x_max - x_min) * 0.38
+        y_pad = (y_max - y_min) * 0.38
 
         # scaleanchor keeps the track's true proportions (1 meter is 1
         # meter in both directions, so corners aren't stretched into the
@@ -461,7 +500,7 @@ with st.container(border=True):
             scaleanchor="x", scaleratio=1, constrain="domain",
         )
 
-        track_fig = style_chart(track_fig, height=450)
+        track_fig = style_chart(track_fig, height=520)
         st.plotly_chart(track_fig, use_container_width=True)
     except Exception:
         st.info(
