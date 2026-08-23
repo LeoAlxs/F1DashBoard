@@ -325,9 +325,43 @@ st.markdown(
         background-color: {winner_color} !important;
         transition: background-color 0.6s ease;
     }}
-    [data-testid="stSidebar"] * {{
+    /* IMPORTANT: only target labels, headers, and plain text — the
+       small text elements that sit DIRECTLY on the colored background.
+       We deliberately do NOT use a broad "*" wildcard selector here
+       anymore. The dropdown boxes (Season, Race, Driver) are built from
+       more specialized Streamlit components internally, and forcing a
+       color onto "everything inside them" fights against Streamlit's
+       own internal styling in ways that behave inconsistently. Leaving
+       them alone means they keep using Streamlit's own reliable
+       default styling (white text on a dark box, guaranteed by the
+       dark theme set in .streamlit/config.toml) — completely
+       independent of whatever color the outer sidebar happens to be.
+    */
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {{
         color: {winner_text_color} !important;
         transition: color 0.6s ease;
+    }}
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] p {{
+        font-family: 'Titillium Web', sans-serif !important;
+    }}
+    /* "Select a Race" renders as an h1 (st.sidebar.title), and
+       "Compare a Driver" renders as an h3 (st.sidebar.subheader) — both
+       get the sporty Orbitron font and a size bump so they stand out
+       clearly as section headers within the sidebar. */
+    [data-testid="stSidebar"] h1 {{
+        font-family: 'Orbitron', sans-serif !important;
+        font-size: 30px !important;
+        font-weight: 800 !important;
+    }}
+    [data-testid="stSidebar"] h3 {{
+        font-family: 'Orbitron', sans-serif !important;
+        font-size: 22px !important;
+        font-weight: 800 !important;
     }}
     </style>
     """,
@@ -403,14 +437,29 @@ with st.container(border=True):
         track_fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False, title=None)
         track_fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False, title=None)
 
+        # The plot area was being set to EXACTLY match the track's min/max
+        # coordinates, with zero breathing room. Since the outline itself
+        # has real thickness (12px wide), the parts of the line sitting
+        # right at those extreme edge points were getting visually cut
+        # off by the plot boundary. Padding the visible range by 8% on
+        # each side gives the thick stroke room to breathe without
+        # touching the edge of the chart.
+        x_min, x_max = rotated_x.min(), rotated_x.max()
+        y_min, y_max = rotated_y.min(), rotated_y.max()
+        x_pad = (x_max - x_min) * 0.08
+        y_pad = (y_max - y_min) * 0.08
+
         # scaleanchor keeps the track's true proportions (1 meter is 1
         # meter in both directions, so corners aren't stretched into the
         # wrong angle). constrain="domain" fixes the "some tracks look
         # tiny" problem — it shrinks whichever axis needs it so the track
         # fills as much of the chart box as it can while still respecting
         # accurate proportions, instead of leaving the box mostly empty.
-        track_fig.update_yaxes(scaleanchor="x", scaleratio=1, constrain="domain")
-        track_fig.update_xaxes(constrain="domain")
+        track_fig.update_xaxes(range=[x_min - x_pad, x_max + x_pad], constrain="domain")
+        track_fig.update_yaxes(
+            range=[y_min - y_pad, y_max + y_pad],
+            scaleanchor="x", scaleratio=1, constrain="domain",
+        )
 
         track_fig = style_chart(track_fig, height=450)
         st.plotly_chart(track_fig, use_container_width=True)
