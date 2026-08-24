@@ -8,68 +8,36 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# One accent color used consistently anywhere we build custom HTML/CSS,
-# so it doesn't get chosen ad-hoc in different places.
 ACCENT_COLOR = "#c8ff3d"
 
-# ---- Helper: rotate track X/Y coordinates to FastF1's official orientation ----
-# FastF1's raw X/Y telemetry coordinates come out in an arbitrary rotation
-# that has nothing to do with how the track "should" look — it depends on
-# wherever that circuit's GPS reference point happens to be. FastF1
-# separately provides the correct rotation angle for each circuit via
-# get_circuit_info().rotation. This function applies that rotation using
-# standard 2D rotation math, which is the same approach used in FastF1's
-# own official track-map examples.
+# Rotates track X/Y coordinates to FastF1's official circuit orientation.
 def rotate_points(x, y, angle_degrees):
     angle = np.deg2rad(angle_degrees)
     x_rotated = x * np.cos(angle) - y * np.sin(angle)
     y_rotated = x * np.sin(angle) + y * np.cos(angle)
     return x_rotated, y_rotated
 
-# ---- Helper: get a team's official F1 color, with a safe fallback ----
-# fastf1.plotting.get_team_color() returns a real hex color code used by
-# that team (e.g. McLaren orange, Ferrari red). We wrap it in a function
-# with a fallback color, in case a team name isn't recognized for some
-# older season — this way the app never crashes over a missing color,
-# it just falls back to a plain default.
+# Gets a team's official color, with a safe fallback if not found.
 def get_color(team_name, session):
     try:
         return fastf1.plotting.get_team_color(team_name, session=session)
     except Exception:
-        return "#636EFA"  # Plotly's default blue
+        return "#636EFA"
 
-# ---- Helper: pick readable text color (black or white) for a background ----
-# A bright color like Mercedes' teal is light enough that white text on
-# top of it is hard to read — but a dark color like Ferrari red still
-# needs white text. This calculates how bright a color actually LOOKS to
-# the human eye (not just its raw numbers) and picks black or white
-# accordingly, so text stays readable no matter which team's color we're
-# using as a background.
+# Picks black or white text for readable contrast against a given color.
 def get_contrast_text_color(hex_color):
     hex_color = hex_color.lstrip("#")
     r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    # This weighting (the "YIQ" formula) matters because the eye is far
-    # more sensitive to green than to blue — a pure blue and a pure
-    # green at the same raw brightness don't look equally bright.
     brightness = (r * 299 + g * 587 + b * 114) / 1000
     return "#000000" if brightness > 150 else "#ffffff"
 
-# ---- Helper: convert a hex color into a semi-transparent rgba string ----
-# Used to build the track outline's fade effect — the same team color
-# repeated at different transparency levels, which is how you fake a
-# soft "glow" without needing real blur effects: several progressively
-# more transparent, wider lines stacked behind a solid center line.
+# Converts a hex color into a semi-transparent rgba string.
 def hex_to_rgba(hex_color, alpha):
     hex_color = hex_color.lstrip("#")
     r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
-# ---- Helper: scale a track's points outward from its own center ----
-# Used to build "echo" copies of the track outline — same shape, but
-# bigger, radiating outward from the middle of the track. Finding the
-# centroid (average X, average Y) gives us a center point to scale
-# around: for each point, we take its distance from that center and
-# stretch it further out by scale_factor, in both directions equally.
+# Scales a set of points outward from their own centroid (for the track's echo effect).
 def scale_points_from_centroid(x, y, scale_factor):
     centroid_x = x.mean()
     centroid_y = y.mean()
@@ -77,11 +45,7 @@ def scale_points_from_centroid(x, y, scale_factor):
     scaled_y = centroid_y + (y - centroid_y) * scale_factor
     return scaled_x, scaled_y
 
-# ---- Helper: apply one consistent look to every chart ----
-# Instead of setting font/height/margins separately on each chart (and
-# risking them all looking slightly different), every chart passes
-# through this one function right before it's displayed. Change
-# something here, and it updates everywhere at once.
+# Applies consistent height/margin/font styling to every chart.
 def style_chart(fig, height=380):
     fig.update_layout(
         height=height,
@@ -90,10 +54,7 @@ def style_chart(fig, height=380):
     )
     return fig
 
-# ---- Helper: a colored dot + label for tire compound, instead of plain text ----
-# Real F1 broadcasts use consistent colors per tire compound. Adding a
-# colored circle in front of the text lets you SCAN the column by color
-# instead of reading every single word.
+# Colored dot per tire compound, so the compound column can be scanned by color.
 COMPOUND_COLORS = {
     "SOFT": "🔴",
     "MEDIUM": "🟡",
@@ -108,10 +69,7 @@ def compound_label(compound):
     dot = COMPOUND_COLORS.get(compound, "")
     return f"{dot} {compound}"
 
-# ---- Helper: format a lap time (timedelta) as clean text like "1:32.608" ----
-# Without this, Streamlit's table widget tries to "smartly" format durations
-# and rounds them to something vague like "2 minutes". Converting to a plain
-# string ourselves guarantees the exact value is shown.
+# Formats a lap time as clean text (e.g. "1:32.608") instead of Streamlit's default rounding.
 def format_laptime(td):
     if pd.isna(td):
         return None
@@ -120,13 +78,8 @@ def format_laptime(td):
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:06.3f}"
 
-# ---- Helper: a big styled section header (small label + big title) ----
-# IMPORTANT LESSON: this HTML is built as ONE single line per element,
-# with no leading spaces before the tags. Streamlit's markdown renderer
-# is picky — if a line inside a markdown block starts with 4+ spaces of
-# indentation, it gets treated as a preformatted "code block" and the
-# HTML tags get printed as literal text instead of being rendered. Using
-# .strip() and avoiding indented multi-line strings avoids that trap.
+# Renders a big styled section header (small accent label + large title).
+# Built as flat, unindented HTML strings — indented lines get treated as a markdown code block.
 def section_header(label, title, subtitle=None, font="Orbitron"):
     subtitle_html = f'<p style="color:#8a8f98; font-size:14px; margin:0; font-family:\'Titillium Web\', sans-serif;">{subtitle}</p>' if subtitle else ""
     html = (
@@ -138,15 +91,7 @@ def section_header(label, title, subtitle=None, font="Orbitron"):
     )
     st.markdown(html, unsafe_allow_html=True)
 
-# ---- Helper: build a custom HTML lap table with the fastest sector highlighted ----
-# Streamlit's built-in st.dataframe is a specialized widget, not regular
-# HTML — it doesn't pick up our custom font, and there's no simple way
-# to color individual cells based on a condition. Building the table
-# ourselves as HTML (via st.markdown) sidesteps both problems: full font
-# control, and we can highlight whichever sector was fastest on each lap
-# so it's an instant visual read instead of comparing three similar
-# numbers. Same indentation rule as section_header above applies here —
-# every piece is built as flat, single-line strings.
+# Builds the lap-by-lap table as custom HTML, highlighting each lap's fastest sector.
 def build_lap_table_html(laps):
     row_strings = []
     for _, lap in laps.iterrows():
@@ -196,10 +141,7 @@ def build_lap_table_html(laps):
     )
     return table_html
 
-# ---- Helper: a generic styled HTML table, same look as the lap table ----
-# Reused for any simple table (Race Results, Top 5 Fastest Laps) so every
-# table on the page shares one consistent style, instead of some using
-# Streamlit's default st.dataframe widget and others using our custom one.
+# Builds a generic styled HTML table, reused for Race Results and Top 5 Fastest Laps.
 def build_generic_table_html(df, columns):
     header_cells = "".join(f'<th style="padding:10px 12px;">{col}</th>' for col in columns)
 
@@ -223,31 +165,20 @@ def build_generic_table_html(df, columns):
     )
     return table_html
 
-# ---- 1. Page setup ----
+# ---- Page setup ----
 st.set_page_config(page_title="F1 Dashboard", page_icon="🏁", layout="wide")
 
-# ---- 1b. Custom font ----
-# Titillium Web is the actual font used in official F1 broadcast graphics
-# and timing screens. Streamlit doesn't let you set a custom font through
-# normal Python code — we have to inject a small snippet of raw CSS,
-# which is what st.markdown(unsafe_allow_html=True) is for. This imports
-# the font from Google Fonts, then tells every heading and normal text
-# element on the page to use it.
+# Injects custom fonts (Titillium Web for body, Orbitron for headings).
 st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&display=swap');
     @import url('https://fonts.googleapis.com/css2?family=Racing+Sans+One&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&display=swap');
 
     html, body, [class*="css"] {
         font-family: 'Titillium Web', sans-serif;
     }
-    /* Orbitron is a bold, distinctive display font — used here just for
-       titles (the main page title and section headlines), while
-       Titillium Web (imported above) stays the font for everything
-       else, like tables and body text. Two fonts with a clear job each,
-       rather than one font trying to do both jobs. */
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&display=swap');
     h1, h2 {
         font-family: 'Orbitron', sans-serif;
         font-weight: 800;
@@ -261,68 +192,48 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---- 2. Cache setup ----
+# ---- Cache setup ----
 CACHE_DIR = "f1_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 fastf1.Cache.enable_cache(CACHE_DIR)
 
-# ---- 3. Load the full race calendar for a season ----
-# Instead of hardcoding race names, we ask FastF1 for the real schedule.
-# We cache this too, since the schedule doesn't change moment to moment.
+# Loads the season's race calendar, filtering out pre-season testing events.
 @st.cache_data
 def load_schedule(year):
     schedule = fastf1.get_event_schedule(year)
-    # Drop pre-season testing events — we only want actual races.
     races = schedule[schedule["EventFormat"] != "testing"]
     return races
 
-# ---- 4. Load one race session ----
-# We use the round NUMBER (1st race, 2nd race, etc.) instead of the race
-# name string. Names can be inconsistent ("Bahrain" vs "Bahrain Grand
-# Prix"), but round numbers are always reliable.
+# Loads one race session by round number (more reliable than matching race names).
 @st.cache_data
 def load_race(year, round_number):
     session = fastf1.get_session(year, round_number, "R")
     session.load()
     return session
 
-# ---- 5. Sidebar: season + race picker, built from real data ----
+# ---- Sidebar: season + race picker ----
 st.sidebar.title("Select a Race")
-# Newest season first, since that's usually what people want to see.
 year = st.sidebar.selectbox("Season", [2026, 2025, 2024])
 
 schedule = load_schedule(year)
 
-# If we're looking at the CURRENT season, some races on the calendar
-# haven't happened yet — they exist in the schedule but have no data.
-# We filter those out so the dropdown only ever shows races we can
-# actually load, instead of letting the user pick a future race and hit
-# an error.
+# Filters out races that haven't happened yet in the current season.
 today = pd.Timestamp.now()
 schedule = schedule[schedule["EventDate"] <= today]
 
-# Build a lookup so we can show race NAMES in the dropdown but still
-# know each race's ROUND NUMBER underneath (needed for step 4 above).
 race_name_to_round = dict(zip(schedule["EventName"], schedule["RoundNumber"]))
 race_name = st.sidebar.selectbox("Race", list(race_name_to_round.keys()))
 round_number = race_name_to_round[race_name]
 
-# ---- 6. Main title ----
+# ---- Main title ----
 st.title("F1 Race Dashboard")
 st.write(f"Showing data for the **{race_name}**, {year} season.")
 
-# ---- 7. Load the selected race ----
+# ---- Load the selected race ----
 with st.spinner("Loading race data..."):
     session = load_race(year, round_number)
 
-# ---- 7a. Determine the race winner ----
-# Moved up here (rather than inside the track outline section below) so
-# this is available for the SIDEBAR theming too, not just the track chart
-# — and so it still works even if the track chart itself fails.
-# Find the race WINNER (Position == 1 in the official results), rather
-# than whoever set the single fastest lap — those aren't always the same
-# driver. We fall back to the fastest lap driver only if, for some
-# reason, no winner is found in the results.
+# Determines the race winner (Position 1), used for both the track chart and sidebar theming.
 winner_rows = session.results[session.results["Position"] == 1]
 if not winner_rows.empty:
     winner_abbr = winner_rows.iloc[0]["Abbreviation"]
@@ -335,13 +246,8 @@ else:
 winner_color = get_color(winner_team, session)
 winner_text_color = get_contrast_text_color(winner_color)
 
-# ---- 7a2. Theme the sidebar with the winner's color ----
-# This CSS gets injected partway through the script, but that's fine —
-# Streamlit assembles the full page before the browser renders anything,
-# so it doesn't matter that the sidebar widgets were already defined
-# earlier in the code above. The `transition` line is what makes the
-# color change smoothly (fade) over half a second whenever you pick a
-# different race, instead of snapping instantly to the new color.
+# Themes the sidebar background/text with the winner's team color.
+# Dropdown boxes keep fixed white text since their own background stays dark navy regardless.
 st.markdown(
     f"""
     <style>
@@ -349,18 +255,6 @@ st.markdown(
         background-color: {winner_color} !important;
         transition: background-color 0.6s ease;
     }}
-    /* IMPORTANT: only target labels, headers, and plain text — the
-       small text elements that sit DIRECTLY on the colored background.
-       We deliberately do NOT use a broad "*" wildcard selector here
-       anymore. The dropdown boxes (Season, Race, Driver) are built from
-       more specialized Streamlit components internally, and forcing a
-       color onto "everything inside them" fights against Streamlit's
-       own internal styling in ways that behave inconsistently. Leaving
-       them alone means they keep using Streamlit's own reliable
-       default styling (white text on a dark box, guaranteed by the
-       dark theme set in .streamlit/config.toml) — completely
-       independent of whatever color the outer sidebar happens to be.
-    */
     [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] p,
     [data-testid="stSidebar"] h1,
@@ -373,10 +267,6 @@ st.markdown(
     [data-testid="stSidebar"] p {{
         font-family: 'Titillium Web', sans-serif !important;
     }}
-    /* "Select a Race" renders as an h1 (st.sidebar.title), and
-       "Compare a Driver" renders as an h3 (st.sidebar.subheader) — both
-       get the sporty Orbitron font and a size bump so they stand out
-       clearly as section headers within the sidebar. */
     [data-testid="stSidebar"] h1 {{
         font-family: 'Orbitron', sans-serif !important;
         font-size: 30px !important;
@@ -392,59 +282,24 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---- 7b. Track outline ----
-# Wrapped in st.container(border=True) so it reads as one distinct card
-# on the page, separated visually from the sections below it.
+# ---- Track outline ----
 with st.container(border=True):
     section_header("Circuit", f"{race_name} — Track Outline")
 
-    # Some laps have incomplete or missing position data (a real gap in
-    # the underlying F1 data, not something we can fix) — get_telemetry()
-    # throws an error in that case. Without this try/except, that error
-    # would crash the ENTIRE page, since Streamlit runs the whole script
-    # top to bottom. Instead, we catch it and skip this one chart with a
-    # friendly note.
+    # Some laps have incomplete position data — caught here so it doesn't crash the whole page.
     try:
-        # We still need an actual LAP (not just a driver name) to pull
-        # position data from — using the winner's fastest lap of the race.
         winner_lap = session.laps.pick_driver(winner_abbr).pick_fastest()
         track_telemetry = winner_lap.get_telemetry()
 
-        # FastF1's raw X/Y coordinates come out in an arbitrary rotation
-        # that has nothing to do with the track's real-world orientation.
-        # get_circuit_info().rotation gives us the correct angle to
-        # rotate by — the same value FastF1's own official examples use.
         circuit_info = session.get_circuit_info()
         rotated_x, rotated_y = rotate_points(
             track_telemetry["X"], track_telemetry["Y"], circuit_info.rotation
         )
 
-        # Building this with go.Figure instead of px.line, so we can layer
-        # FOUR separate line traces — but unlike a typical "glow" effect
-        # (same shape, different widths), each one here is a full COPY of
-        # the track outline, scaled slightly bigger than the last and
-        # radiating outward from the track's own center, getting more
-        # transparent the further out it goes. Like ripples expanding
-        # outward from the actual track shape, rather than a blurred halo
-        # around it.
-        #
-        # shape="spline" is the fix for the jagged/rigid look — by
-        # default, Plotly connects each individual telemetry point with a
-        # dead-straight line segment, and since points are only sampled
-        # every so often, corners end up looking like sharp angles
-        # instead of smooth curves. "spline" tells Plotly to draw a
-        # smooth curve THROUGH the points instead of straight lines
-        # BETWEEN them — this isn't a limitation of the tool, just a
-        # setting we hadn't turned on yet. smoothing controls how loose
-        # the curve is (0 = off, up to 1.3 = very loose).
+        # spline smoothing avoids a jagged look between sampled telemetry points.
         line_shape_settings = dict(shape="spline", smoothing=1.0)
 
-        # (scale, opacity) for each echo layer — biggest and faintest
-        # first, since Plotly draws later traces ON TOP of earlier ones,
-        # and we want the real (unscaled) track outline to end up on top,
-        # fully visible, with the echoes fading out behind it. More
-        # layers, spaced further apart, reads as a grander, more dramatic
-        # ripple rather than a tight cluster of lines close to the track.
+        # Each echo layer is a scaled-up copy of the track, fading out with distance.
         echo_layers = [
             (1.32, 0.05),
             (1.25, 0.08),
@@ -461,39 +316,22 @@ with st.container(border=True):
                 line=dict(color=hex_to_rgba(winner_color, alpha), width=3, **line_shape_settings),
                 showlegend=False,
             ))
-        # The real, unscaled track outline, drawn last (on top), solid
-        # and fully opaque — this is the actual, accurate track shape.
+        # The real, unscaled track outline, drawn last so it's on top and fully opaque.
         track_fig.add_trace(go.Scatter(
             x=rotated_x, y=rotated_y, mode="lines",
             line=dict(color=winner_color, width=3, **line_shape_settings), showlegend=False,
         ))
         track_fig.update_layout(template="plotly_dark")
 
-        # X and Y are raw position coordinates, not measurements with
-        # real-world units someone would read off an axis — hide the
-        # numbers/gridlines and just show the shape itself.
         track_fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False, title=None)
         track_fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False, title=None)
 
-        # The plot area was being set to EXACTLY match the track's min/max
-        # coordinates, with zero breathing room. Since the outline itself
-        # has real thickness, the parts of the line sitting right at
-        # those extreme edge points were getting visually cut off by the
-        # plot boundary. Padding the visible range gives room to breathe
-        # without touching the edge of the chart — bumped up to 38% now
-        # that the outermost echo layer extends up to 32% beyond the
-        # track's actual boundaries, so we need extra room to fit it.
+        # Padding prevents the thick outline/echoes from being clipped at the chart edge.
         x_min, x_max = rotated_x.min(), rotated_x.max()
         y_min, y_max = rotated_y.min(), rotated_y.max()
         x_pad = (x_max - x_min) * 0.38
         y_pad = (y_max - y_min) * 0.38
 
-        # scaleanchor keeps the track's true proportions (1 meter is 1
-        # meter in both directions, so corners aren't stretched into the
-        # wrong angle). constrain="domain" fixes the "some tracks look
-        # tiny" problem — it shrinks whichever axis needs it so the track
-        # fills as much of the chart box as it can while still respecting
-        # accurate proportions, instead of leaving the box mostly empty.
         track_fig.update_xaxes(range=[x_min - x_pad, x_max + x_pad], constrain="domain")
         track_fig.update_yaxes(
             range=[y_min - y_pad, y_max + y_pad],
@@ -510,19 +348,17 @@ with st.container(border=True):
 
 st.divider()
 
-# ---- 8 & 9. Session info + race results, grouped in one card ----
+# ---- Session info + race results ----
 with st.container(border=True):
     section_header("Session Info", session.event["EventName"], str(session.event["EventDate"]))
 
-    # session.results holds the official classification: who finished
-    # where, for which team, and how many points they scored.
     section_header("Standings", "Race Results (Top 10)")
     results = session.results[["Position", "Abbreviation", "TeamName", "Points"]].head(10)
     st.markdown(build_generic_table_html(results, ["Position", "Abbreviation", "TeamName", "Points"]), unsafe_allow_html=True)
 
 st.divider()
 
-# ---- 10 & 11. Fastest lap + Top 5, grouped in one card ----
+# ---- Fastest lap + Top 5 ----
 with st.container(border=True):
     section_header("Race Highlights", "Fastest Lap & Top 5")
 
@@ -533,21 +369,16 @@ with st.container(border=True):
 
     st.subheader("Top 5 Fastest Laps")
     top_5 = session.laps.sort_values("LapTime").head(5).copy()
-    # .copy() avoids a pandas warning since we're about to modify this slice
     top_5["LapTime"] = top_5["LapTime"].apply(format_laptime)
     st.markdown(build_generic_table_html(top_5, ["Driver", "LapTime", "LapNumber"]), unsafe_allow_html=True)
 
 st.divider()
 
-# ---- 12. Driver-specific breakdown, grouped in one card ----
-# A second sidebar control, separate from the race picker, letting the
-# user drill into one specific driver's full race.
+# ---- Driver-specific breakdown ----
 st.sidebar.subheader("Compare a Driver")
 drivers = sorted(session.laps["Driver"].unique())
 selected_driver = st.sidebar.selectbox("Driver", drivers)
 
-# A second dropdown for comparison, excluding whoever is already selected
-# above — comparing a driver against themselves wouldn't be useful.
 compare_driver = st.sidebar.selectbox(
     "Compare With",
     [d for d in drivers if d != selected_driver],
@@ -556,19 +387,12 @@ compare_driver = st.sidebar.selectbox(
 with st.container(border=True):
     section_header("Driver Detail", f"{selected_driver}'s Race")
 
-    # pick_driver filters the full lap dataset down to just this driver's laps.
     driver_laps = session.laps.pick_driver(selected_driver).copy()
 
-    # We save the lap time as a plain number (seconds) BEFORE formatting
-    # it as display text below. Charts need actual numbers to plot —
-    # "1:32.608" is just text as far as a chart is concerned, but 92.608
-    # is a number it can place on a graph.
+    # Raw seconds are kept alongside the formatted display text, since charts need real numbers.
     driver_laps["LapTimeSeconds"] = driver_laps["LapTime"].dt.total_seconds()
     driver_laps["LapTime"] = driver_laps["LapTime"].apply(format_laptime)
 
-    # Save the RAW sector times in seconds before formatting, same
-    # reasoning as LapTimeSeconds above — we need actual numbers to
-    # compare which sector was fastest, then format display text after.
     driver_laps["Sector1Seconds"] = driver_laps["Sector1Time"].dt.total_seconds()
     driver_laps["Sector2Seconds"] = driver_laps["Sector2Time"].dt.total_seconds()
     driver_laps["Sector3Seconds"] = driver_laps["Sector3Time"].dt.total_seconds()
@@ -576,30 +400,21 @@ with st.container(border=True):
     driver_laps["Sector1Time"] = driver_laps["Sector1Time"].apply(format_laptime)
     driver_laps["Sector2Time"] = driver_laps["Sector2Time"].apply(format_laptime)
     driver_laps["Sector3Time"] = driver_laps["Sector3Time"].apply(format_laptime)
-    # Colored dot in front of the compound name, so the eye can scan for
-    # color instead of reading "HARD" repeated a dozen times in a row.
     driver_laps["Compound"] = driver_laps["Compound"].apply(compound_label)
 
     st.subheader("Full Race — Lap by Lap")
     st.markdown(build_lap_table_html(driver_laps), unsafe_allow_html=True)
 
     # ---- Lap time progression chart ----
-    # This shows the shape of a driver's whole race at a glance: did they
-    # get faster as fuel burned off, slower as tires wore out, lose time
-    # in traffic, or have a dip from a pit stop? A table of numbers can't
-    # show that pattern nearly as clearly as a line chart can.
     st.subheader("Pace Across the Race")
 
-    # Some laps have no valid time (e.g. the lap right after a pit stop,
-    # or a lap under a safety car) — we drop those so the chart doesn't
-    # show a gap dropping to zero.
     pace_data = driver_laps.dropna(subset=["LapTimeSeconds"])
 
     pace_fig = px.line(
         pace_data,
         x="LapNumber",
         y="LapTimeSeconds",
-        markers=True,  # shows a dot on each individual lap, not just a smooth line
+        markers=True,
         labels={"LapNumber": "Lap", "LapTimeSeconds": "Lap Time (seconds)"},
         template="plotly_dark",
     )
@@ -609,21 +424,10 @@ with st.container(border=True):
     st.plotly_chart(pace_fig, use_container_width=True)
 
     # ---- Telemetry summary for the fastest lap ----
-    # Telemetry is much more detailed than lap data — hundreds of
-    # individual readings taken throughout a single lap (speed, throttle,
-    # brake, gear, track position). Rather than dump hundreds of rows on
-    # the page, we pull it for the driver's fastest lap and show a few
-    # clean summary numbers, then a chart below.
     st.subheader("Fastest Lap — Telemetry")
 
     driver_fastest_lap = session.laps.pick_driver(selected_driver).pick_fastest()
     telemetry = driver_fastest_lap.get_car_data()
-
-    # add_distance() calculates how far (in meters) into the lap each
-    # telemetry reading was taken. This becomes our x-axis below —
-    # instead of plotting against raw time, we plot against physical
-    # position around the track, so the chart shape actually reflects
-    # the circuit's layout (straights, corners, etc.).
     telemetry = telemetry.add_distance()
 
     col3, col4, col5, col6 = st.columns(4)
@@ -633,11 +437,6 @@ with st.container(border=True):
     col6.metric("Time Braking", f"{telemetry['Brake'].mean() * 100:.0f}%")
 
     # ---- Combined telemetry chart (speed, throttle, brake) ----
-    # Rather than three separate full-width charts, each with its own
-    # repeated x-axis label, make_subplots with shared_xaxes=True stacks
-    # three small charts on top of each other that all line up on the
-    # same horizontal position — so you can trace a straight line down
-    # through speed/throttle/brake at any point on the lap.
     telemetry_color = get_color(driver_fastest_lap["Team"], session)
 
     telemetry_fig = make_subplots(
@@ -648,10 +447,6 @@ with st.container(border=True):
         vertical_spacing=0.08,
     )
 
-    # go.Scatter is the lower-level building block px.line uses
-    # internally — we need it here since make_subplots needs traces
-    # added one at a time, rather than one call building the whole
-    # figure like px.line does.
     telemetry_fig.add_trace(
         go.Scatter(x=telemetry["Distance"], y=telemetry["Speed"], line=dict(color=telemetry_color), showlegend=False),
         row=1, col=1,
@@ -672,13 +467,7 @@ with st.container(border=True):
 
 st.divider()
 
-# ---- 15. Driver vs. driver comparison, grouped in one card ----
-# This is the section that actually answers "who was faster, and where."
-# The trick used throughout this section: build two small tables (one
-# per driver) that have the SAME column names, add a "Driver" column to
-# each so we know which rows belong to who, then stack them into one
-# combined table. Plotly can then draw one separate colored line per
-# driver automatically, just by telling it color="Driver".
+# ---- Driver vs. driver comparison ----
 with st.container(border=True):
     section_header("Head to Head", f"{selected_driver} vs {compare_driver}")
 
@@ -694,10 +483,7 @@ with st.container(border=True):
 
     combined_pace = pd.concat([driver1_pace, driver2_pace])
 
-    # Build a color map so each driver's line uses THEIR team's real
-    # color, instead of Plotly's generic default two-color palette.
-    # color_discrete_map takes a dictionary of
-    # {value in the "color" column: hex color to use}.
+    # Maps each driver to their real team color instead of Plotly's default palette.
     compare_color = get_color(compare_laps["Team"].iloc[0], session)
     driver_color_map = {selected_driver: driver_color, compare_driver: compare_color}
 
@@ -708,7 +494,7 @@ with st.container(border=True):
         y="LapTimeSeconds",
         color="Driver",
         color_discrete_map=driver_color_map,
-        line_dash="Driver",  # gives each driver a different line style (solid vs dashed)
+        line_dash="Driver",
         markers=True,
         labels={"LapNumber": "Lap", "LapTimeSeconds": "Lap Time (seconds)"},
         template="plotly_dark",
