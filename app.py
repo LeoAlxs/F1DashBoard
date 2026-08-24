@@ -205,7 +205,10 @@ def load_schedule(year):
     return races
 
 # Loads one race session by round number (more reliable than matching race names).
-@st.cache_data
+# Uses cache_resource (not cache_data) since a FastF1 Session is a live object,
+# not plain data — cache_data copies/serializes results, which can silently
+# strip its internal loaded state; cache_resource caches it by reference instead.
+@st.cache_resource
 def load_race(year, round_number):
     session = fastf1.get_session(year, round_number, "R")
     session.load()
