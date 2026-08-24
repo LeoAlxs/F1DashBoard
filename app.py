@@ -211,7 +211,12 @@ def load_schedule(year):
 @st.cache_resource
 def load_race(year, round_number):
     session = fastf1.get_session(year, round_number, "R")
-    session.load()
+    # Only load what we actually use upfront (laps + results). Telemetry
+    # is fetched lazily per-lap via get_car_data()/get_telemetry() later,
+    # so we don't need FastF1 to bulk-download it for the whole session —
+    # that's a much larger download that was likely timing out on
+    # Streamlit Cloud's network. Weather/messages aren't used at all.
+    session.load(telemetry=False, weather=False, messages=False)
     return session
 
 # ---- Sidebar: season + race picker ----
