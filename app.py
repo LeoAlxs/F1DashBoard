@@ -211,13 +211,31 @@ def load_schedule(year):
 @st.cache_resource
 def load_race(year, round_number):
     session = fastf1.get_session(year, round_number, "R")
-    # Only load what we actually use upfront (laps + results). Telemetry
-    # is fetched lazily per-lap via get_car_data()/get_telemetry() later,
-    # so we don't need FastF1 to bulk-download it for the whole session —
-    # that's a much larger download that was likely timing out on
-    # Streamlit Cloud's network. Weather/messages aren't used at all.
-    session.load(telemetry=False, weather=False, messages=False)
+    # Telemetry MUST be loaded here — FastF1's get_car_data()/get_telemetry()
+    # on an individual lap require the whole session's telemetry to already
+    # be loaded; they don't fetch lazily on their own. Weather/messages
+    # genuinely aren't used anywhere in this app, so those stay skipped.
+    session.load(weather=False, messages=False)
     return session
+
+# Fetches one driver's fastest-lap car data (speed/throttle/brake), cached by
+# (year, round, driver) so switching an unrelated widget doesn't re-fetch it.
+@st.cache_data
+def get_driver_telemetry(year, round_number, driver_abbr):
+    session = load_race(year, round_number)
+    lap = session.laps.pick_driver(driver_abbr).pick_fastest()
+    telemetry = lap.get_car_data().add_distance()
+    return telemetry, lap["Team"]
+
+# Fetches one driver's fastest-lap POSITION data (X/Y), used for the track
+# outline — separate from get_driver_telemetry since it needs a different
+# FastF1 method (get_telemetry, not get_car_data) and isn't always needed.
+@st.cache_data
+def get_driver_position_telemetry(year, round_number, driver_abbr):
+    session = load_race(year, round_number)
+    lap = session.laps.pick_driver(driver_abbr).pick_fastest()
+    telemetry = lap.get_telemetry()
+    return telemetry, lap["Team"]
 
 # ---- Sidebar: season + race picker ----
 st.sidebar.title("Select a Race")
@@ -296,8 +314,7 @@ with st.container(border=True):
 
     # Some laps have incomplete position data — caught here so it doesn't crash the whole page.
     try:
-        winner_lap = session.laps.pick_driver(winner_abbr).pick_fastest()
-        track_telemetry = winner_lap.get_telemetry()
+        track_telemetry, _ = get_driver_position_telemetry(year, round_number, winner_abbr)
 
         circuit_info = session.get_circuit_info()
         rotated_x, rotated_y = rotate_points(
@@ -434,9 +451,7 @@ with st.container(border=True):
     # ---- Telemetry summary for the fastest lap ----
     st.subheader("Fastest Lap — Telemetry")
 
-    driver_fastest_lap = session.laps.pick_driver(selected_driver).pick_fastest()
-    telemetry = driver_fastest_lap.get_car_data()
-    telemetry = telemetry.add_distance()
+    telemetry, driver_team = get_driver_telemetry(year, round_number, selected_driver)
 
     col3, col4, col5, col6 = st.columns(4)
     col3.metric("Top Speed", f"{telemetry['Speed'].max():.0f} km/h")
@@ -445,7 +460,7 @@ with st.container(border=True):
     col6.metric("Time Braking", f"{telemetry['Brake'].mean() * 100:.0f}%")
 
     # ---- Combined telemetry chart (speed, throttle, brake) ----
-    telemetry_color = get_color(driver_fastest_lap["Team"], session)
+    telemetry_color = get_color(driver_team, session)
 
     telemetry_fig = make_subplots(
         rows=3,
@@ -511,8 +526,7 @@ with st.container(border=True):
     st.plotly_chart(compare_pace_fig, use_container_width=True)
 
     # --- Speed trace comparison, using each driver's fastest lap ---
-    compare_fastest_lap = session.laps.pick_driver(compare_driver).pick_fastest()
-    compare_telemetry = compare_fastest_lap.get_car_data().add_distance()
+    compare_telemetry, _ = get_driver_telemetry(year, round_number, compare_driver)
 
     telemetry_labeled = telemetry[["Distance", "Speed"]].copy()
     telemetry_labeled["Driver"] = selected_driver
